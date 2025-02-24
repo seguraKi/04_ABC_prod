@@ -1,0 +1,241 @@
+# Databricks notebook source
+# MAGIC %run "../../01_INIT/SBMConfig"
+
+# COMMAND ----------
+
+import datetime
+
+day = datetime.datetime.today().weekday()
+if day < 5:
+    pass
+else:
+    dbutils.notebook.exit(notebookReturnSuccess)
+    1/0
+
+# COMMAND ----------
+
+if rtEnvironment == "Prod":
+  spark.read.parquet("/mnt/sbm_refined/abc_trigger_summary_dim/").createOrReplaceTempView("abc_trigger_summary_dim")
+  spark.read.parquet("/mnt/mda-prod/supplier_attr_dim").createOrReplaceTempView("supplier_attr_dim")
+  spark.read.parquet("/mnt/mda-prod/vendor_dim").createOrReplaceTempView("vendor_dim")
+  # spark.read.parquet("/mnt/sppo-refined-dev/abc_trigger_summary_dim").createOrReplaceTempView("abc_trigger_summary_dim")
+else:
+  spark.read.parquet("/mnt/sbm_refined/abc_trigger_summary_dim/").createOrReplaceTempView("abc_trigger_summary_dim")
+  # spark.read.parquet("/mnt/refined/abc_trigger_summary_dim").createOrReplaceTempView("abc_trigger_summary_dim")
+  #spark.read.parquet("/mnt/mda-prod/abc_trigger_summary_dim").createOrReplaceTempView("abc_trigger_summary_dim")
+
+
+
+# COMMAND ----------
+
+# %sql
+# select 
+#   sd.vendor_id
+#   , vd.vendor_name
+#   , sd.supplier_email
+#   , sd.supplier_deadline_date
+#   , datediff(now(), sd.supplier_deadline_date) as days_overdue
+#   , sd.ticket_status 
+#   , sd.ticket_id
+#   , sd.ticket_title
+#   , sd.ticket_owner
+#   , ifnull(rt.last_reminder, 0) as last_reminder
+#   , ifnull(concat(ticket_owner, ";", supplier_email), '') as sent_emails
+# from abc_trigger_summary_dim sd
+# left join vendor_dim vd
+#   on cast(vd.vendor_id as int) = sd.vendor_id
+# left join historical_Reminders_Trigger rt
+#   on rt.vendor_id = sd.vendor_id
+#   and rt.ticket_id = sd.ticket_id
+#   and rt.ticket_status = sd.ticket_status
+#   and rt.supplier_deadline_date = sd.supplier_deadline_date
+# where LOWER(sd.ticket_status) like 'awaiting for supplier%'
+#   and mod(ifnull(rt.last_reminder, 0),3) = 0
+#   and datediff(now(), sd.supplier_deadline_date) > 0
+
+# COMMAND ----------
+
+sql = """
+select 
+  sd.vendor_id
+  , sd.supplier_email
+  , sd.supplier_deadline_date
+  , datediff(now(), sd.supplier_deadline_date) as days_overdue
+  , sd.ticket_status 
+  , sd.ticket_id
+  , sd.ticket_title
+  , sd.ticket_owner
+  , ifnull(rt.last_reminder, 0) as last_reminder
+  , concat(sd.ticket_owner, ";", sd.supplier_email) as sent_emails
+from abc_trigger_summary_dim sd
+left join supplier_attr_dim vd
+  on cast(vd.vendor_id as int) = sd.vendor_id
+left join historical_Reminders_Trigger rt
+  on rt.vendor_id = sd.vendor_id
+  and rt.ticket_id = sd.ticket_id
+  and rt.ticket_status = sd.ticket_status
+  and rt.supplier_deadline_date = sd.supplier_deadline_date
+where LOWER(sd.ticket_status) like 'awaiting for supplier%'
+  and mod(ifnull(rt.last_reminder, 0),3) = 0
+  and datediff(now(), sd.supplier_deadline_date) > 0
+  and concat(ticket_owner, ";", supplier_email) is not null
+"""
+Deadline_Reminders_Trigger = spark.sql(sql)
+
+# COMMAND ----------
+
+# awaiting for supplier
+
+# COMMAND ----------
+
+# This Command sends email notifications for missing inventory agreements
+import smtplib, ssl
+from email.message import EmailMessage
+from email.utils import make_msgid
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+from datetime import datetime
+ 
+title = 'Send_Notifications_via_Email'
+now_start = datetime.now()
+try:
+   
+  config_mail = {
+        'host': dbutils.secrets.get(scope = "sbm-keyvault", key = "emailHost"),
+        'port': dbutils.secrets.get(scope = "sbm-keyvault", key = "emailPort"),
+        'username': dbutils.secrets.get(scope = "sbm-keyvault", key = "emailUser"),
+        'password': dbutils.secrets.get(scope = "sbm-keyvault", key = "emailPass")
+  }
+  
+  sender = 'sbmmailer.im@pg.com'
+  rows = Deadline_Reminders_Trigger.rdd.collect()
+ 
+  for row in rows:
+    receiver = row['sent_emails']
+ 
+    message = MIMEMultipart("related")
+    message['Subject'] = 'ABC - Late Ticket (Vendor: ' + row['vendor_id'] + ')'
+    message['From'] = sender
+    message['To'] = receiver
+    
+    vendor_id = row['vendor_id']
+    ticket_id = row['ticket_id']
+    days_overdue = row['days_overdue']
+    supplier_deadline_date = row['supplier_deadline_date']
+    ticket_title = row['ticket_title']
+    ticket_owner = row['ticket_owner']
+    
+    if (ticket_id == ''):
+      sbm_platform_link = 'https://app11.jaggaer.com/login.php'
+    else:
+      sbm_platform_link = 'https://app11.jaggaer.com/main.php?t=tickets%2Ftree.php&c=tickets%2Findex.php&controller=ticket&ticket=' + ticket_id
+    
+    print(f'receiver:{receiver} vendor_id:{vendor_id} ticket_id:{ticket_id} days_overdue:{days_overdue} supplier_deadline_date{supplier_deadline_date} ticket_title{ticket_title} ticket_owner{ticket_owner} sbm_platform_link:{sbm_platform_link}')
+ 
+    emailBody = """\
+    <html>
+       <head><base href=""></head>
+       <body margin-left:40;margin-right:100">
+          <p><b>*This is an autogenerated email and replies are not monitored*</b></p>
+          <br>
+          <p><b>Dear Supplier,</b></p>
+          <p>This notification is to let you know that there is a MPQ Optimization ticket awaiting for your input. </p>
+          <p>Please, your help to provide an answer accordingly by following this link: <a href="{sbm_platform_link}">SBM Platform</a></p>
+          
+          <p style="text-decoration: underline">
+            <strong>SBM ticket information:</strong>
+          </p>
+          <ul style="list-style:none;">
+            <li ><strong>Ticket Type:</strong> MPQ Optimization: Analysis trigger</li>
+            <li ><strong>Vendor code:</strong> {vendor_id}</li>
+            <li ><strong>Deadline to provide input:</strong> {supplier_deadline_date}</li>
+            <li style="margin-bottom: 250%;"><strong>Number of days overdue:</strong> {days_overdue}</li>
+           
+            <li ><strong>Ticket ID:</strong> {ticket_id}</li>
+            <li ><strong>Ticket Title:</strong> {ticket_title}</li>
+            <li ><strong>Ticket Owner:</strong> {ticket_owner}</li>
+          </ul>
+                   
+          <br>
+          <p style="margin:0">Kind Regards,</p>
+          <p style="margin:0">Supplier Base Management Team</p>
+          <img src="cid:signature" />
+       </body>
+    </html>
+    """
+    
+    message.attach(MIMEText(emailBody.format(vendor_id=row['vendor_id'], ticket_id=row['ticket_id'], days_overdue=row['days_overdue'], supplier_deadline_date=row['supplier_deadline_date'], ticket_title=row['ticket_title'], ticket_owner=row['ticket_owner'], sbm_platform_link=sbm_platform_link), "html"))
+    with open('/dbfs/FileStore/sbm/images/signature.png', 'rb') as image:
+      img = MIMEImage(image.read())
+    img.add_header("Content-ID", "<{}>".format("signature"))
+    message.attach(img)
+ 
+    with smtplib.SMTP(config_mail['host'], config_mail['port']) as server:
+          server.starttls()
+          code_login = server.login(config_mail['username'], config_mail['password'])
+          server.send_message(message)
+        
+  sbm_Function_v2.captureLog('dbx', title, '', '', '1', '0', now_start)
+except Exception as ex:
+  sbm_Function_v2.captureLog('dbx', title, '', '', '0', '0', now_start, ex)
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC insert overwrite table historical_Reminders_Trigger
+# MAGIC select 
+# MAGIC   sd.vendor_id
+# MAGIC   , sd.supplier_deadline_date
+# MAGIC   , sd.ticket_status 
+# MAGIC   , sd.ticket_id
+# MAGIC   , ifnull(rt.last_reminder, 0) as last_reminder
+# MAGIC from abc_trigger_summary_dim sd
+# MAGIC left join supplier_attr_dim vd
+# MAGIC   on cast(vd.vendor_id as int) = sd.vendor_id
+# MAGIC left join historical_Reminders_Trigger rt
+# MAGIC   on rt.vendor_id = sd.vendor_id
+# MAGIC   and rt.ticket_id = sd.ticket_id
+# MAGIC   and rt.ticket_status = sd.ticket_status
+# MAGIC   and rt.supplier_deadline_date = sd.supplier_deadline_date
+# MAGIC where LOWER(sd.ticket_status) like 'awaiting for supplier%'
+# MAGIC   and datediff(now(), sd.supplier_deadline_date) > 0
+
+# COMMAND ----------
+
+from pyspark.sql.functions import expr, col
+
+historical_Reminders_Trigger = spark.read.format("delta").load("/mnt/delta/sbm_data_operation/dbx_tables/historical_Reminders_Trigger")
+# historical_Reminders_Trigger.show()
+
+historical_Reminders_Trigger = historical_Reminders_Trigger.withColumn("last_reminder", expr("last_reminder + 1"))
+# historical_Reminders_Trigger.show()
+
+historical_Reminders_Trigger.write.format("delta").mode("overwrite").save("/mnt/delta/sbm_data_operation/dbx_tables/historical_Reminders_Trigger")
+
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC select * from historical_Reminders_Trigger
+
+# COMMAND ----------
+
+squelch = """
+%sql
+drop table if exists historical_Reminders_Trigger;
+CREATE TABLE historical_Reminders_Trigger (
+  
+  vendor_id string
+  , supplier_deadline_date date
+  , ticket_status string
+  , ticket_id string
+  , last_reminder int
+
+)USING DELTA LOCATION '/mnt/delta/sbm_data_operation/dbx_tables/historical_Reminders_Trigger'
+
+"""
+
+# COMMAND ----------
+
+dbutils.notebook.exit(notebookReturnSuccess)
