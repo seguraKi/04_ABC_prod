@@ -608,14 +608,6 @@ abc_quotation_summary_dim.write.parquet('/mnt/sbm_refined/abc_quotation_summary_
 
 # COMMAND ----------
 
-data = abc_quotation_fam_fact.columns
-
-# COMMAND ----------
-
-print(data)
-
-# COMMAND ----------
-
 #quotation_v2_step1 = abc_quotation_fam_fact.select("ticket_id","vendor_id","plant_code","material_id","abc_mat_fam_new_msm","qty_forecast_n12","qty_forecast_n12_family","abc_segment","flag_supplier_inv_storage","price_unit_factor","doc_curr_code")
 
 quotation_fact_v2 = abc_quotation_fact_v1.select('vendor_id', 'plant_code', 'material_id', 'abc_mat_fam_new_msm', 'base_unit_of_measure', 'qty_forecast_n12', 'qty_forecast_n12_family', 'abc_segment', 'freight_factor', 'flag_supplier_inv_storage', 'price_unit_factor', 'doc_curr_code', 'min_prod_qty_sc1', 'runs_annual_sc1', 'net_price_sc1', 'min_prod_qty_sc2', 'runs_annual_sc2', 'net_price_sc2', 'min_prod_qty_sc3', 'runs_annual_sc3', 'net_price_sc3', 'min_prod_qty_sc4', 'runs_annual_sc4', 'net_price_sc4', 'min_prod_qty_sc5', 'runs_annual_sc5', 'net_price_sc5', 'min_prod_qty_sc6', 'runs_annual_sc6', 'net_price_sc6', 'min_prod_qty_sc7', 'runs_annual_sc7', 'net_price_sc7', 'min_prod_qty_sc8', 'runs_annual_sc8', 'net_price_sc8', 'ticket_id')
