@@ -27,22 +27,18 @@
 
 # COMMAND ----------
 
-# MAGIC %run "../../01_INIT/SBM_Logger"
-
-# COMMAND ----------
-
-set_log_identifiers(solution_name="ABC", pipeline_id=5, process_id=1)
-log_process_start()
-
-# COMMAND ----------
-
 """Path to stored raw ABC files"""
 ABC_RAW_PATH = '/mnt/raw/ABC/'
 ABC_RAW_PATH_SBM = '/mnt/sbm_raw/ABC/'
 
 # COMMAND ----------
 
+from pyspark.sql.functions import round, format_number
+
+# COMMAND ----------
+
 from connectors import JaggaerConnector
+from pyspark.sql.functions import col, when
 jagger_connector = JaggaerConnector("prod")
 remotepath='/OutofPlatform/ABC/' 
 # localpath = ABC_RAW_PATH
@@ -53,6 +49,35 @@ list_of_files = jagger_connector.print_dir_contents(remotepath)
 localpath = ABC_RAW_PATH_SBM
 for i in list_of_files:
     jagger_connector.get_file(remotepath+i, "/dbfs"+localpath+i) 
+
+# COMMAND ----------
+
+conm = spark.read.parquet("/mnt/mda-prod/consumption_fcst_fact/")
+conm = conm.where("requirement_date_for_the_component <= date_format(date_add(current_date(), 365),'yyyyMMdd')").alias('n12')
+consumption_n12_filtered = conm.select(
+                              "material_id",
+                              "plant_code",
+                              "sum_total_Requirement_qty",
+                            )
+
+
+#NEW
+consumption_n12_grouped = (consumption_n12_filtered
+                           .groupBy( "material_id", "plant_code")
+                           .agg(F.sum("sum_total_Requirement_qty").alias("total_requirement_qty"))
+)
+#consumption_n12_grouped = consumption_n12_grouped.withColumnRenamed("purchase_vendor_id","vendor_id")
+
+# COMMAND ----------
+
+abc_fcst = spark.read.parquet("/mnt/sbm_refined/abc_fcst_override_fact")
+abc_fcst = abc_fcst.withColumn("plant_code", F.lpad(F.col('plant_code'), 4, '0')) \
+                   .withColumn('vendor_id', F.lpad(F.col('vendor_id'), 10, '0')) \
+                   .withColumn('material_id', F.lpad(F.col('material_id'), 18, '0')) \
+                   .withColumn('ticket_id', F.lpad(F.col('ticket_id'), 7, '0'))
+abc_fcst = abc_fcst.select("vendor_id","material_id","plant_code","ticket_id","qty_forecast_override")
+abc_fcst = abc_fcst.withColumnRenamed("ticket_id","supplier_input_ticket_id")
+
 
 # COMMAND ----------
 
@@ -154,14 +179,6 @@ abc_scale_summary_dim = (
 
 # COMMAND ----------
 
-display(abc_supplier_input_dim)
-
-# COMMAND ----------
-
-display(abc_supplier_input_dim.where("material_id IN ('91326919', '91494589')"))
-
-# COMMAND ----------
-
 renameColumns(abc_quotation_fact).createOrReplaceTempView("abc_quotation_fact")
 renameColumns(abc_quotation_summary_dim).createOrReplaceTempView("abc_quotation_summary_dim")
 renameColumns(abc_supplier_input_dim).createOrReplaceTempView("abc_supplier_input_dim")
@@ -171,11 +188,6 @@ renameColumns(abc_trigger_summary_dim).createOrReplaceTempView("abc_trigger_summ
 renameColumns(abc_fcst_override_fact).createOrReplaceTempView("abc_fcst_override_fact")
 renameColumns(abc_scale_fact).createOrReplaceTempView("abc_scale_fact")
 renameColumns(abc_scale_summary_dim).createOrReplaceTempView("abc_scale_summary_dim")
-
-# COMMAND ----------
-
-# %sql
-# SELECT * FROM abc_supplier_input_dim WHERE qty_forecast_n12 IS NOT NULL
 
 # COMMAND ----------
 
@@ -329,25 +341,7 @@ INNER JOIN abc_trigger_summary_dim tsdm
 """
 abc_supplier_input_inprocess_dim = spark.sql(abc_supplier_input_inprocess_dim).cache()
 abc_supplier_input_inprocess_dim.write.parquet('/mnt/sbm_refined/abc_supplier_input_inprocess_dim', 'overwrite')
-# abc_supplier_input_inprocess_dim.write.parquet('/mnt/refined/abc_supplier_input_inprocess_dim', 'overwrite')
-#abc_supplier_input_inprocess_dim.write.parquet('/mnt/mda-prod/abc_supplier_input_inprocess_dim', 'overwrite')
 
-# Removed ASDW write - July 16
-# (abc_supplier_input_inprocess_dim.write
-#   .format("com.databricks.spark.sqldw")
-#   .mode("overwrite")
-#   .option("url",url )
-#   .option("maxStrLength","4000")
-#   .option("dbtable","abc_supplier_input_inprocess_dim")
-#   .option("min_prod_qty", "min_prod_qty decimal(12,2)")
-#  .option("restriction_min_prod_qty", "restriction_min_prod_qty decimal(12,2)")
-#  .option("material_per_pallet_qty", "material_per_pallet_qty decimal(12,2)")
-#   .option("useAzureMSI", "true")
-#   .option("tempDir","abfss://temp@saproddatahub.dfs.core.windows.net/sbm")
-#   .option("user",jdbcUsername)
-#   .option("password",jdbcPassword)
-#   .save()
-# )
 
 # COMMAND ----------
 
@@ -405,30 +399,7 @@ abc_supplier_input_dim = abc_supplier_input_dim.alias("sup").filter("(abc_mat_fa
 renameColumns(abc_supplier_input_dim).createOrReplaceTempView("abc_supplier_input_dim")
 
 abc_supplier_input_dim.write.parquet('/mnt/sbm_refined/abc_supplier_input_dim', 'overwrite')
-# abc_supplier_input_dim.write.parquet('/mnt/refined/abc_supplier_input_dim', 'overwrite')
-#abc_supplier_input_dim.write.parquet('/mnt/mda-prod/abc_supplier_input_dim', 'overwrite')
 
-# Removed ASDW write - July 16
-# (abc_supplier_input_dim.write
-#   .format("com.databricks.spark.sqldw")
-#   .mode("overwrite")
-#   .option("url",url )
-#   .option("maxStrLength","4000")
-#   .option("dbtable","abc_supplier_input_dim")
-#   .option("restriction_min_prod_qty", "restriction_min_prod_qty decimal(10,2)")
-#   .option("restriction_max_prod_qty", "restriction_max_prod_qty decimal(10,2)")
-#   .option("material_per_pallet_qty", "material_per_pallet_qty decimal(10,2)")
-#   .option("material_shelf_life_months", "material_shelf_life_months decimal(10,2)")
-#   .option("min_prod_qty", "min_prod_qty decimal(10,2)")
-#   .option("qty_forecast_n12", "qty_forecast_n12 decimal(10,2)")
-#   .option("mm_min_lot_size", "mm_min_lot_size decimal(10,2)")
-#   .option("vendor_plant_change_freq", "vendor_plant_change_freq decimal(10,2)")
-#   .option("useAzureMSI", "true")
-#   .option("tempDir","abfss://temp@saproddatahub.dfs.core.windows.net/sbm")
-#   .option("user",jdbcUsername)
-#   .option("password",jdbcPassword)
-#   .save()
-# )
 
 # COMMAND ----------
 
@@ -501,25 +472,7 @@ and (case when scale_scenario_type = 1 then sf.material_id else sf.scale_fam end
 
 abc_scale_fact = spark.sql(abc_scale_fact).withColumn("plant_code",F.upper(F.col("plant_code"))).cache()
 abc_scale_fact.write.parquet('/mnt/sbm_refined/abc_scale_fact', 'overwrite')
-# abc_scale_fact.write.parquet('/mnt/refined/abc_scale_fact', 'overwrite')
-#abc_scale_fact.write.parquet('/mnt/mda-prod/abc_scale_fact', 'overwrite')
 
-# Removed ASDW write - July 16
-# (abc_scale_fact.write
-#   .format("com.databricks.spark.sqldw")
-#   .mode("overwrite")
-#   .option("url",url )
-#   .option("maxStrLength","4000")
-#   .option("dbtable","abc_scale_fact")
-#   .option("mpq_scale_qty","mpq_scale_qty decimal(12,2)") 
-#   .option("scale_price","scale_price decimal(12,2)") 
-#   .option("price_unit_factor","price_unit_factor decimal(12,2)") 
-#   .option("useAzureMSI", "true")
-#   .option("tempDir","abfss://temp@saproddatahub.dfs.core.windows.net/sbm")
-#   .option("user",jdbcUsername)
-#   .option("password",jdbcPassword)
-#   .save()
-# )
 
 # COMMAND ----------
 
@@ -570,54 +523,11 @@ INNER JOIN abc_quotation_summary_dim qsd
 """
 abc_quotation_fam_fact = spark.sql(abc_quotation_fam_fact).cache()
 abc_quotation_fam_fact.write.parquet('/mnt/sbm_refined/abc_quotation_fam_fact', 'overwrite')
-# abc_quotation_fam_fact.write.parquet('/mnt/refined/abc_quotation_fam_fact', 'overwrite')
-#abc_quotation_fam_fact.write.parquet('/mnt/mda-prod/abc_quotation_fam_fact', 'overwrite')
 
-# Removed ASDW write - July 16
-# (abc_quotation_fam_fact.write
-#   .format("com.databricks.spark.sqldw")
-#   .mode("overwrite")
-#   .option("url",url )
-#   .option("maxStrLength","4000")
-#   .option("dbtable","abc_quotation_fam_fact")
-#   ##.option("qty_forecast_n12","qty_forecast_n12 decimal(12,2)") 
-#   .option("qty_forecast_n12_family","qty_forecast_n12_family decimal(12,2)")
-#   .option("freight_factor","freight_factor decimal(12,2)")
-#   .option("price_unit_factor","price_unit_factor int")
-#   .option("min_prod_qty_sc1","min_prod_qty_sc1 decimal(12,2)")
-#   .option("runs_annual_sc1","runs_annual_sc1 decimal(12,2)")
-#   .option("net_price_sc1","net_price_sc1 decimal(12,2)")
-#   .option("min_prod_qty_sc2","min_prod_qty_sc2 decimal(12,2)")
-#   .option("runs_annual_sc2","runs_annual_sc2 decimal(12,2)")
-#   .option("net_price_sc2","net_price_sc2 decimal(12,2)")
-#   .option("min_prod_qty_sc3","min_prod_qty_sc3 decimal(12,2)")
-#   .option("runs_annual_sc3","runs_annual_sc3 decimal(12,2)")
-#   .option("net_price_sc3","net_price_sc3 decimal(12,2)")
-#   .option("min_prod_qty_sc4","min_prod_qty_sc4 decimal(12,2)")
-#   .option("runs_annual_sc4","runs_annual_sc4 decimal(12,2)")
-#   .option("net_price_sc4","net_price_sc4 decimal(12,2)")
-#   .option("min_prod_qty_sc5","min_prod_qty_sc5 decimal(12,2)")
-#   .option("runs_annual_sc5","runs_annual_sc5 decimal(12,2)")
-#   .option("net_price_sc5","net_price_sc5 decimal(12,2)")
-#   .option("min_prod_qty_sc6","min_prod_qty_sc6 decimal(12,2)")
-#   .option("runs_annual_sc6","runs_annual_sc6 decimal(12,2)")
-#   .option("net_price_sc6","net_price_sc6 decimal(12,2)")
-#   .option("min_prod_qty_sc7","min_prod_qty_sc7 decimal(12,2)")
-#   .option("runs_annual_sc7","runs_annual_sc7 decimal(12,2)")
-#   .option("net_price_sc7","net_price_sc7 decimal(12,2)")
-#   .option("min_prod_qty_sc8","min_prod_qty_sc8 decimal(12,2)")
-#   .option("runs_annual_sc8","runs_annual_sc8 decimal(12,2)")
-#   .option("net_price_sc8","net_price_sc8 decimal(12,2)")
-#   .option("useAzureMSI", "true")
-#   .option("tempDir","abfss://temp@saproddatahub.dfs.core.windows.net/sbm")
-#   .option("user",jdbcUsername)
-#   .option("password",jdbcPassword)
-#   .save()
-# )
 
 # COMMAND ----------
 
-abc_quotation_fact = """
+abc_quotation_fact_sql = """
 
   select 
     right(concat('0000000000', qf.vendor_id), 10) as vendor_id
@@ -665,52 +575,8 @@ abc_quotation_fact = """
 """
 
 
-abc_quotation_fact = spark.sql(abc_quotation_fact).withColumn("plant_code",F.upper(F.col("plant_code"))).cache()
-abc_quotation_fact.write.parquet('/mnt/sbm_refined/abc_quotation_fact', 'overwrite')
-# abc_quotation_fact.write.parquet('/mnt/refined/abc_quotation_fact', 'overwrite')
-#abc_quotation_fact.write.parquet('/mnt/mda-prod/abc_quotation_fact', 'overwrite')
+abc_quotation_fact_v1 = spark.sql(abc_quotation_fact_sql).withColumn("plant_code",F.upper(F.col("plant_code"))).cache()
 
-# Removed ASDW write - July 16
-# (abc_quotation_fact.write
-#   .format("com.databricks.spark.sqldw")
-#   .mode("overwrite")
-#   .option("url",url )
-#   .option("maxStrLength","4000")
-#   .option("dbtable","abc_quotation_fact")
-#   .option("qty_forecast_n12", "qty_forecast_n12 decimal(12,2)")
-#   .option("qty_forecast_n12_family", "qty_forecast_n12_family decimal(12,2)")
-#   .option("freight_factor", "freight_factor decimal(12,2)")
-#   .option("price_unit_factor", "price_unit_factor int")
-#   .option("min_prod_qty_sc1", "min_prod_qty_sc1 decimal(12,2)")
-#   .option("runs_annual_sc1", "runs_annual_sc1 decimal(12,2)")
-#   .option("net_price_sc1", "net_price_sc1 decimal(12,2)")
-#   .option("min_prod_qty_sc2", "min_prod_qty_sc2 decimal(12,2)")
-#   .option("runs_annual_sc2", "runs_annual_sc2 decimal(12,2)")
-#   .option("net_price_sc2", "net_price_sc2 decimal(12,2)")
-#   .option("min_prod_qty_sc3", "min_prod_qty_sc3 decimal(12,2)")
-#   .option("runs_annual_sc3", "runs_annual_sc3 decimal(12,2)")
-#   .option("net_price_sc3", "net_price_sc3 decimal(12,2)")
-#   .option("min_prod_qty_sc4", "min_prod_qty_sc4 decimal(12,2)")
-#   .option("runs_annual_sc4", "runs_annual_sc4 decimal(12,2)")
-#   .option("net_price_sc4", "net_price_sc4 decimal(12,2)")
-#   .option("min_prod_qty_sc5", "min_prod_qty_sc5 decimal(12,2)")
-#   .option("runs_annual_sc5", "runs_annual_sc5 decimal(12,2)")
-#   .option("net_price_sc5", "net_price_sc5 decimal(12,2)")
-#   .option("min_prod_qty_sc6", "min_prod_qty_sc6 decimal(12,2)")
-#   .option("runs_annual_sc6", "runs_annual_sc6 decimal(12,2)")
-#   .option("net_price_sc6", "net_price_sc6 decimal(12,2)")
-#   .option("min_prod_qty_sc7", "min_prod_qty_sc7 decimal(12,2)")
-#   .option("runs_annual_sc7", "runs_annual_sc7 decimal(12,2)")
-#   .option("net_price_sc7", "net_price_sc7 decimal(12,2)")
-#   .option("min_prod_qty_sc8", "min_prod_qty_sc8 decimal(12,2)")
-#   .option("runs_annual_sc8", "runs_annual_sc8 decimal(12,2)")
-#   .option("net_price_sc8", "net_price_sc8 decimal(12,2)") 
-#   .option("useAzureMSI", "true")
-#   .option("tempDir","abfss://temp@saproddatahub.dfs.core.windows.net/sbm")
-#   .option("user",jdbcUsername)
-#   .option("password",jdbcPassword)
-#   .save()
-# )
 
 
 # COMMAND ----------
@@ -738,24 +604,98 @@ abc_quotation_summary_dim = """
 """
 abc_quotation_summary_dim = spark.sql(abc_quotation_summary_dim).cache()
 abc_quotation_summary_dim.write.parquet('/mnt/sbm_refined/abc_quotation_summary_dim', 'overwrite')
-# abc_quotation_summary_dim.write.parquet('/mnt/refined/abc_quotation_summary_dim', 'overwrite')
-#abc_quotation_summary_dim.write.parquet('/mnt/mda-prod/abc_quotation_summary_dim', 'overwrite')
 
-# Removed ASDW write - July 16
-# (abc_quotation_summary_dim.write
-#   .format("com.databricks.spark.sqldw")
-#   .mode("overwrite")
-#   .option("url",url )
-#   .option("maxStrLength","4000")
-#   .option("dbtable","abc_quotation_summary_dim")
-#   .option("quotation_scenario_type", "quotation_scenario_type int")
-#  .option("ticket_custom_id", "ticket_custom_id int")
-#   .option("useAzureMSI", "true")
-#   .option("tempDir","abfss://temp@saproddatahub.dfs.core.windows.net/sbm")
-#   .option("user",jdbcUsername)
-#   .option("password",jdbcPassword)
-#   .save()
-# )
+
+# COMMAND ----------
+
+data = abc_quotation_fam_fact.columns
+
+# COMMAND ----------
+
+print(data)
+
+# COMMAND ----------
+
+#quotation_v2_step1 = abc_quotation_fam_fact.select("ticket_id","vendor_id","plant_code","material_id","abc_mat_fam_new_msm","qty_forecast_n12","qty_forecast_n12_family","abc_segment","flag_supplier_inv_storage","price_unit_factor","doc_curr_code")
+
+quotation_fact_v2 = abc_quotation_fact_v1.select('vendor_id', 'plant_code', 'material_id', 'abc_mat_fam_new_msm', 'base_unit_of_measure', 'qty_forecast_n12', 'qty_forecast_n12_family', 'abc_segment', 'freight_factor', 'flag_supplier_inv_storage', 'price_unit_factor', 'doc_curr_code', 'min_prod_qty_sc1', 'runs_annual_sc1', 'net_price_sc1', 'min_prod_qty_sc2', 'runs_annual_sc2', 'net_price_sc2', 'min_prod_qty_sc3', 'runs_annual_sc3', 'net_price_sc3', 'min_prod_qty_sc4', 'runs_annual_sc4', 'net_price_sc4', 'min_prod_qty_sc5', 'runs_annual_sc5', 'net_price_sc5', 'min_prod_qty_sc6', 'runs_annual_sc6', 'net_price_sc6', 'min_prod_qty_sc7', 'runs_annual_sc7', 'net_price_sc7', 'min_prod_qty_sc8', 'runs_annual_sc8', 'net_price_sc8', 'ticket_id')
+
+quotation_fam_fact_v2 = abc_quotation_fam_fact.select('vendor_id', 'plant_code', 'abc_mat_fam_new_msm', 'base_unit_of_measure', 'qty_forecast_n12_family', 'abc_segment', 'freight_factor', 'flag_supplier_inv_storage', 'price_unit_factor', 'doc_curr_code', 'min_prod_qty_sc1', 'runs_annual_sc1', 'net_price_sc1', 'min_prod_qty_sc2', 'runs_annual_sc2', 'net_price_sc2', 'min_prod_qty_sc3', 'runs_annual_sc3', 'net_price_sc3', 'min_prod_qty_sc4', 'runs_annual_sc4', 'net_price_sc4', 'min_prod_qty_sc5', 'runs_annual_sc5', 'net_price_sc5', 'min_prod_qty_sc6', 'runs_annual_sc6', 'net_price_sc6', 'min_prod_qty_sc7', 'runs_annual_sc7', 'net_price_sc7', 'min_prod_qty_sc8', 'runs_annual_sc8', 'net_price_sc8', 'ticket_id')
+
+quotation_summary = abc_quotation_summary_dim.select("ticket_id","supplier_input_ticket_id","quotation_scenario_type")
+quotation_scenario_1 = quotation_summary.filter(F.col("quotation_scenario_type") == 1).select("ticket_id","supplier_input_ticket_id")
+quotation_scenario_2 = quotation_summary.filter(F.col("quotation_scenario_type") == 2).select("ticket_id","supplier_input_ticket_id")
+
+
+quotation_fact_scenario1 = quotation_fact_v2.join(quotation_scenario_1, on="ticket_id", how="inner")
+
+
+# COMMAND ----------
+
+quotation_fam_fact_scenario2 = quotation_fam_fact_v2.join(quotation_scenario_2, on="ticket_id", how="inner")
+#Removes the GCAS and the forecast since they are going to be calculated later
+#quotation_scenario2 = quotation_scenario2.drop("material_id","qty_forecast_n12")
+
+supplier_input_material = abc_supplier_input_dim.select("ticket_id","vendor_id","plant_code","abc_mat_fam_new_msm","material_id")
+supplier_input_material = supplier_input_material.withColumnRenamed("ticket_id","supplier_input_ticket_id")
+
+supplier_input_uom = abc_supplier_input_dim.select("ticket_id","vendor_id","plant_code","material_id","base_unit_of_measure")
+supplier_input_uom = supplier_input_uom.withColumnRenamed("ticket_id","supplier_input_ticket_id")
+
+abc_trigger_flag = abc_trigger_summary_dim.select("ticket_id","vendor_id","forecast_override_flag","ticket_custom_id")
+abc_trigger_flag = abc_trigger_flag.withColumnRenamed("ticket_id","supplier_input_ticket_id")
+
+quotation_fact_scenario1 = quotation_fact_scenario1.drop("supplier_input_ticket_id")                      
+
+quotation_fam_fact_scenario2 = (quotation_fam_fact_scenario2
+                      .join(
+                        supplier_input_material,
+                        on=["supplier_input_ticket_id", "plant_code", "vendor_id", "abc_mat_fam_new_msm"],
+                        how="left"
+                      ).join(
+                        supplier_input_uom,
+                        on=["supplier_input_ticket_id", "plant_code", "vendor_id", "material_id"],
+                        how="left"
+                      ).join(
+                        abc_trigger_flag,
+                        on=["supplier_input_ticket_id", "vendor_id"],
+                        how="left"
+                      ).join(
+                        consumption_n12_grouped,
+                        on=[ "plant_code","material_id"],
+                        how="left"
+                      ).join(
+                        abc_fcst,
+                        on=["vendor_id", "plant_code","material_id","supplier_input_ticket_id"],
+                        how="left"
+                      )
+)
+
+quotation_fam_fact_scenario2 = quotation_fam_fact_scenario2.withColumn(
+    "qty_forecast_n12",
+    when((col("forecast_override_flag") == "yes") & (col("qty_forecast_override").isNotNull()) & (col("qty_forecast_override") != ""), col("qty_forecast_override"))
+    .otherwise(col("total_requirement_qty"))
+)
+
+#quotation_fam_fact_scenario2 = quotation_fam_fact_scenario2.drop('forecast_override_flag', 'total_requirement_qty', 'qty_forecast_override')
+
+# COMMAND ----------
+
+# #quotation_fam_fact_scenario2 = quotation_fam_fact_scenario2.withColumnRenamed("supplier_input_ticket_id","ticket_id")
+# df_final = (
+#   quotation_fact_scenario1.select("plant_code","vendor_id","material_id","ticket_id","abc_mat_fam_new_msm","qty_forecast_n12","qty_forecast_n12_family","abc_segment","flag_supplier_inv_storage","price_unit_factor","doc_curr_code","base_unit_of_measure")
+#   .union(quotation_fam_fact_scenario2.select("plant_code","vendor_id","material_id","ticket_id","abc_mat_fam_new_msm","qty_forecast_n12","qty_forecast_n12_family","abc_segment","flag_supplier_inv_storage","price_unit_factor","doc_curr_code","base_unit_of_measure"))
+#             )
+
+df_final = (
+  quotation_fact_scenario1.select('vendor_id', 'plant_code', 'material_id', 'abc_mat_fam_new_msm', 'base_unit_of_measure', 'qty_forecast_n12', 'qty_forecast_n12_family', 'abc_segment', 'freight_factor', 'flag_supplier_inv_storage', 'price_unit_factor', 'doc_curr_code', 'min_prod_qty_sc1', 'runs_annual_sc1', 'net_price_sc1', 'min_prod_qty_sc2', 'runs_annual_sc2', 'net_price_sc2', 'min_prod_qty_sc3', 'runs_annual_sc3', 'net_price_sc3', 'min_prod_qty_sc4', 'runs_annual_sc4', 'net_price_sc4', 'min_prod_qty_sc5', 'runs_annual_sc5', 'net_price_sc5', 'min_prod_qty_sc6', 'runs_annual_sc6', 'net_price_sc6', 'min_prod_qty_sc7', 'runs_annual_sc7', 'net_price_sc7', 'min_prod_qty_sc8', 'runs_annual_sc8', 'net_price_sc8', 'ticket_id')
+  .union(quotation_fam_fact_scenario2.select('vendor_id', 'plant_code', 'material_id', 'abc_mat_fam_new_msm', 'qff.base_unit_of_measure', 'qty_forecast_n12', 'qty_forecast_n12_family', 'abc_segment', 'freight_factor', 'flag_supplier_inv_storage', 'price_unit_factor', 'doc_curr_code', 'min_prod_qty_sc1', 'runs_annual_sc1', 'net_price_sc1', 'min_prod_qty_sc2', 'runs_annual_sc2', 'net_price_sc2', 'min_prod_qty_sc3', 'runs_annual_sc3', 'net_price_sc3', 'min_prod_qty_sc4', 'runs_annual_sc4', 'net_price_sc4', 'min_prod_qty_sc5', 'runs_annual_sc5', 'net_price_sc5', 'min_prod_qty_sc6', 'runs_annual_sc6', 'net_price_sc6', 'min_prod_qty_sc7', 'runs_annual_sc7', 'net_price_sc7', 'min_prod_qty_sc8', 'runs_annual_sc8', 'net_price_sc8', 'ticket_id'))
+)
+abc_quotation_fact = df_final.withColumn("qty_forecast_n12", round(df_final["qty_forecast_n12"], 2))
+
+abc_quotation_fact.write.parquet('/mnt/sbm_refined/abc_quotation_fact', 'overwrite')
+
+
 
 # COMMAND ----------
 
@@ -798,10 +738,6 @@ abc_fcst_override_fact.write.parquet('/mnt/sbm_refined/abc_fcst_override_fact', 
 #   .option("password",jdbcPassword)
 #   .save()
 # )
-
-# COMMAND ----------
-
-log_process_complete(notebookReturnSuccess)
 
 # COMMAND ----------
 
